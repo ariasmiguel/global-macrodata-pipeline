@@ -1,0 +1,66 @@
+# Web Scraping Rules and Guidelines
+
+## Core Principles
+- Write concise, technical responses with accurate Python examples
+- Prioritize readability, efficiency, and maintainability
+- Use modular and reusable functions
+- Handle dynamic and complex websites appropriately
+- Follow PEP 8 style guidelines
+
+## General Web Scraping
+- Use requests for simple HTTP GET/POST requests
+- Parse HTML with BeautifulSoup for efficient extraction
+- Handle JavaScript-heavy sites with selenium/headless browsers
+- Respect website terms of service and use proper headers
+- Implement rate limiting and random delays
+
+## Text Data Gathering
+- Use jina for structured/semi-structured data with AI-driven pipelines
+- Use firecrawl for deep web content and precise exploration
+- Apply jina when AI-driven structuring is needed
+- Use firecrawl for hierarchical exploration tasks
+
+## Complex Processes
+- Use agentQL for known complex processes (login, forms)
+- Define clear workflows with error handling
+- Automate CAPTCHA solving when applicable
+- Use multion for unknown/exploratory tasks
+- Design adaptable, context-aware workflows
+
+## Data Validation and Storage
+- Validate scraped data formats and types
+- Handle missing data appropriately
+- Store in appropriate formats (CSV, JSON, SQLite)
+- Use batch processing for large-scale scraping
+
+## Error Handling
+- Implement robust error handling for:
+  - Connection timeouts
+  - Parsing errors
+  - Dynamic content issues
+- Use exponential backoff for retries
+- Maintain detailed error logs
+
+## Performance Optimization
+- Target specific HTML elements (id, class, XPath)
+- Use asyncio/concurrent.futures for concurrent scraping
+- Implement caching for repeated requests
+- Profile and optimize code
+
+## Dependencies
+- requests
+- BeautifulSoup (bs4)
+- selenium
+- jina
+- firecrawl
+- agentQL
+- multion
+- lxml
+- pandas
+
+## Key Conventions
+1. Begin with exploratory analysis
+2. Modularize scraping logic
+3. Document assumptions and workflows
+4. Use version control
+5. Follow ethical scraping practices 
