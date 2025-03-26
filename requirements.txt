@@ -1,0 +1,22 @@
+# Web Scraping
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+selenium>=4.18.0
+lxml>=5.1.0
+
+# Data Processing
+pandas>=2.2.0
+numpy>=1.26.0
+
+# API and Data Formats
+python-dotenv>=1.0.0
+pyarrow>=15.0.0  # For parquet support
+
+# Testing
+pytest>=8.0.0
+pytest-cov>=4.1.0
+
+# Development
+black>=24.2.0  # Code formatting
+flake8>=7.0.0  # Linting
+isort>=5.13.0  # Import sorting 
