@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional
 import time
 import itertools
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -9,6 +10,8 @@ import os
 
 from .base import BaseExtractor
 
+# Configure logging
+logger = logging.getLogger(__name__)
 
 class BLSExtractor(BaseExtractor):
     """Extractor for BLS API data."""
@@ -21,24 +24,33 @@ class BLSExtractor(BaseExtractor):
         if not self.api_key:
             raise ValueError("BLS API key is required")
         super().__init__()
+        logger.debug("Initialized BLSExtractor")
     
     def generate_ppi_series_ids(self, industry_codes_path: Path, product_codes_path: Path) -> List[str]:
         """Generate PPI series IDs from industry and product codes."""
-        # Load industry and product codes
+        logger.debug(f"Loading industry codes from {industry_codes_path}")
         industry_codes = pd.read_csv(industry_codes_path)['industry_code'].astype(str).str.zfill(6).tolist()
+        logger.debug(f"Found {len(industry_codes)} industry codes")
+        
+        logger.debug(f"Loading product codes from {product_codes_path}")
         product_codes = pd.read_csv(product_codes_path)['product_code'].astype(str).tolist()
+        logger.debug(f"Found {len(product_codes)} product codes")
         
         # Generate series IDs
         series_ids = [f"PCU{industry}{product}" for industry, product in itertools.product(industry_codes, product_codes)]
+        logger.debug(f"Generated {len(series_ids)} series IDs")
         return series_ids
     
     def validate_ppi_series(self, series_ids: List[str], batch_size: int = 50) -> List[str]:
         """Validate PPI series IDs using the BLS API."""
         valid_series = []
+        total_batches = (len(series_ids) + batch_size - 1) // batch_size
         
         # Process in batches due to API limitations
         for i in range(0, len(series_ids), batch_size):
+            batch_num = i // batch_size + 1
             batch = series_ids[i:i + batch_size]
+            logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} series)")
             
             try:
                 # Try to get data for the last year to validate
@@ -48,24 +60,31 @@ class BLSExtractor(BaseExtractor):
                     end_year=2023
                 )
                 # If successful, add to valid series
-                valid_series.extend(df['series_id'].unique())
+                new_valid = df['series_id'].unique().tolist()
+                valid_series.extend(new_valid)
+                logger.debug(f"Found {len(new_valid)} valid series in batch {batch_num}")
             except Exception as e:
-                print(f"Batch {i//batch_size} failed: {str(e)}")
+                logger.warning(f"Batch {batch_num} failed: {str(e)}")
             
             # Respect API rate limits
             time.sleep(1)
         
-        return list(set(valid_series))
+        unique_valid = list(set(valid_series))
+        logger.info(f"Found total of {len(unique_valid)} valid unique series")
+        return unique_valid
     
     def save_ppi_series_ids(self, series_ids: List[str], output_path: Path):
         """Save PPI series IDs to a file."""
+        logger.debug(f"Saving {len(series_ids)} series IDs to {output_path}")
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, 'w') as f:
             for series_id in series_ids:
                 f.write(f"{series_id}\n")
+        logger.debug("Series IDs saved successfully")
     
     def get_series_metadata(self, series_id: str) -> Dict[str, Any]:
         """Fetch metadata for a specific series."""
+        logger.debug(f"Fetching metadata for series {series_id}")
         endpoint = f"{self.BASE_URL}/timeseries/metadata"
         params = {
             "seriesid": series_id,
@@ -78,6 +97,7 @@ class BLSExtractor(BaseExtractor):
     
     def get_series_data(self, series_ids: List[str], start_year: int, end_year: int) -> pd.DataFrame:
         """Fetch time series data for multiple series."""
+        logger.debug(f"Fetching data for {len(series_ids)} series from {start_year} to {end_year}")
         endpoint = f"{self.BASE_URL}/timeseries/data"
         
         # BLS API has rate limits, so we'll add a delay
@@ -95,6 +115,7 @@ class BLSExtractor(BaseExtractor):
         
         data = response.json()
         if "Results" not in data:
+            logger.error("No results found in API response")
             raise ValueError("No results found in API response")
             
         # Convert to DataFrame
@@ -110,7 +131,9 @@ class BLSExtractor(BaseExtractor):
                     "footnotes": item.get("footnotes", [])
                 })
         
-        return pd.DataFrame(records)
+        df = pd.DataFrame(records)
+        logger.debug(f"Retrieved {len(df)} data points")
+        return df
     
     def extract(self, series_ids: List[str], start_year: int, end_year: int) -> pd.DataFrame:
         """Extract data from BLS API."""
