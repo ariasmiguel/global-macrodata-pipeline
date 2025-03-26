@@ -32,6 +32,43 @@ class BLSExtractor(BaseExtractor):
         response.raise_for_status()
         return response.json()
     
+    def get_all_series_info(self) -> pd.DataFrame:
+        """Get information about all available BLS series."""
+        endpoint = f"{self.BASE_URL}/timeseries/metadata"
+        params = {
+            "api_key": self.api_key
+        }
+        
+        response = self.session.get(endpoint, params=params)
+        response.raise_for_status()
+        
+        data = response.json()
+        if "Results" not in data:
+            raise ValueError("No results found in API response")
+            
+        # Convert to DataFrame
+        records = []
+        for series in data["Results"]["series"]:
+            records.append({
+                "series_id": series["seriesID"],
+                "title": series.get("title", ""),
+                "survey_name": series.get("survey_name", ""),
+                "survey_abbreviation": series.get("survey_abbreviation", ""),
+                "seasonal": series.get("seasonal", ""),
+                "area_code": series.get("area_code", ""),
+                "measure_code": series.get("measure_code", ""),
+                "industry_code": series.get("industry_code", ""),
+                "occupation_code": series.get("occupation_code", ""),
+                "data_type_code": series.get("data_type_code", ""),
+                "footnote_codes": series.get("footnote_codes", []),
+                "begin_year": series.get("begin_year", ""),
+                "begin_period": series.get("begin_period", ""),
+                "end_year": series.get("end_year", ""),
+                "end_period": series.get("end_period", ""),
+            })
+        
+        return pd.DataFrame(records)
+    
     def get_series_data(self, series_ids: List[str], start_year: int, end_year: int) -> pd.DataFrame:
         """Fetch time series data for multiple series."""
         endpoint = f"{self.BASE_URL}/timeseries/data"
