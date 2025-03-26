@@ -62,10 +62,22 @@ log/
 .env.test.local
 .env.production.local
 
-# Data files (uncomment if you want to ignore data files)
-# data/bronze/*
-# data/silver/*
-# data/gold/*
-# !data/bronze/.gitkeep
-# !data/silver/.gitkeep
-# !data/gold/.gitkeep 
+# Data files
+data/bronze/*
+data/silver/*
+data/gold/*
+!data/bronze/.gitkeep
+!data/silver/.gitkeep
+!data/gold/.gitkeep
+
+# Additional data patterns
+*.csv
+*.xlsx
+*.xls
+*.parquet
+*.json
+*.pkl
+*.h5
+*.db
+*.sqlite
+*.sqlite3 
