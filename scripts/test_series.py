@@ -1,7 +1,6 @@
-import os
-import requests
-from dotenv import load_dotenv
 import logging
+from pathlib import Path
+from macrodata_pipeline.extractors.bls import BLSExtractor
 from datetime import datetime
 
 # Configure logging
@@ -11,52 +10,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv()
-
-def test_series(series_id):
+def test_series(series_id: str, extractor: BLSExtractor):
     """Test a specific series ID against the BLS API."""
-    api_key = os.getenv('BLS_API_KEY')
-    if not api_key:
-        logger.error("BLS_API_KEY not found in environment variables")
-        return
-
-    # Get current year and previous year
-    current_year = datetime.now().year
-    previous_year = current_year - 1
-
-    url = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
-    headers = {
-        'BLS-API-KEY': api_key,
-        'Content-Type': 'application/json'
-    }
-    
-    data = {
-        "seriesid": [series_id],
-        "startyear": str(previous_year),
-        "endyear": str(current_year),
-        "registrationkey": api_key
-    }
-
     try:
-        response = requests.post(url, json=data, headers=headers)
-        response.raise_for_status()
-        result = response.json()
+        # Get current year and previous year
+        current_year = datetime.now().year
+        previous_year = current_year - 1
 
-        if result.get('status') == 'REQUEST_SUCCEEDED':
-            series_data = result.get('Results', {}).get('series', [])
-            if series_data:
-                logger.info(f"Series {series_id} is valid and active")
-                logger.info(f"Latest data: {series_data[0].get('data', [])[0] if series_data[0].get('data') else 'No data'}")
-            else:
-                logger.warning(f"Series {series_id} returned no data")
+        # Get series data
+        df = extractor.get_series_data(
+            series_ids=[series_id],
+            start_year=previous_year,
+            end_year=current_year
+        )
+
+        if not df.empty:
+            logger.info(f"Series {series_id} is valid and active")
+            logger.info(f"Latest data: {df.iloc[0].to_dict()}")
         else:
-            logger.error(f"API request failed: {result.get('message', 'Unknown error')}")
+            logger.warning(f"Series {series_id} returned no data")
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error making API request: {e}")
+    except Exception as e:
+        logger.error(f"Error testing series {series_id}: {str(e)}")
 
 def main():
+    # Initialize extractor
+    extractor = BLSExtractor()
+    
     # Test multiple series IDs
     series_ids = [
         "PCU22112222112241",  # Electric power distribution
@@ -67,7 +47,7 @@ def main():
 
     for series_id in series_ids:
         logger.info(f"\nTesting series ID: {series_id}")
-        test_series(series_id)
+        test_series(series_id, extractor)
 
 if __name__ == "__main__":
     main() 
