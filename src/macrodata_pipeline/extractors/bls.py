@@ -1,14 +1,11 @@
 from typing import Any, Dict, List, Optional
-from pathlib import Path
-import json
 import time
 
 import pandas as pd
-import requests
 from dotenv import load_dotenv
 import os
 
-from .base_extractor import BaseExtractor
+from .base import BaseExtractor
 
 
 class BLSExtractor(BaseExtractor):

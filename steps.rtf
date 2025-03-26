@@ -1,0 +1,73 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2821
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 ## Project Step-by-Step Order for Global Macroeconomic Data Pipeline\
+\
+### 1. Project Setup\
+- Set up Cursor development environment.\
+- Initialize GitHub repository with branches (`master`, `develop`).\
+- Define repository folder structure:\
+```\
+global-macrodata-pipeline/\
+\uc0\u9474 \
+\uc0\u9500 \u9472 \u9472  data/\
+\uc0\u9474    \u9500 \u9472 \u9472  bronze/\
+\uc0\u9474    \u9500 \u9472 \u9472  silver/\
+\uc0\u9474    \u9492 \u9472 \u9472  gold/\
+\uc0\u9474 \
+\uc0\u9500 \u9472 \u9472  scripts/\
+\uc0\u9474    \u9500 \u9472 \u9472  extraction/\
+\uc0\u9474    \u9500 \u9472 \u9472  cleaning/\
+\uc0\u9474    \u9500 \u9472 \u9472  transformation/\
+\uc0\u9474    \u9492 \u9472 \u9472  ingestion/\
+\uc0\u9474 \
+\uc0\u9500 \u9472 \u9472  dags/\
+\uc0\u9500 \u9472 \u9472  tests/\
+\uc0\u9500 \u9472 \u9472  docs/\
+\uc0\u9500 \u9472 \u9472  .gitignore\
+\uc0\u9492 \u9472 \u9472  README.md\
+```\
+- Set up Python environment and initial dependencies (`requests`, `pandas`, `python-dotenv`).\
+\
+### 2. Bronze Layer (Raw Data Collection)\
+- Review BLS API documentation.\
+- Develop Python scripts for fetching series metadata from BLS.\
+- Store raw data in `/data/bronze/`.\
+\
+### 3. Airflow DAG Setup\
+- Install Apache Airflow locally.\
+- Automate BLS data fetching with Airflow DAGs.\
+- Implement logging and error handling.\
+\
+### 4. Silver Layer (Data Cleaning & Validation)\
+- Write scripts to clean raw data (duplicates, missing values, formatting).\
+- Validate schema and data integrity.\
+- Store cleaned data temporarily in `/data/silver/`.\
+\
+### 5. Gold Layer (Aggregation & Transformation)\
+- Develop scripts to aggregate and transform data (monthly, quarterly summaries).\
+- Validate accuracy of aggregated data.\
+- Optimize data for query efficiency.\
+\
+### 6. Clickhouse Integration\
+- Set up Clickhouse locally.\
+- Define schema based on Gold layer structure.\
+- Write ETL scripts for data ingestion into Clickhouse.\
+- Automate ingestion with Airflow DAGs.\
+\
+### 7. Automation, CI/CD, and Monitoring\
+- Set up GitHub Actions for CI/CD (testing, linting, deployment).\
+- Implement basic pipeline monitoring and alerts.\
+\
+### 8. Documentation & Best Practices\
+- Document each step clearly using markdown.\
+- Maintain clean, readable, and commented code.\
+- Prepare guidelines for expanding data and regional coverage.\
+\
+Follow this structured order closely to ensure clarity, scalability, and efficiency in your development workflow.\
+\
+}

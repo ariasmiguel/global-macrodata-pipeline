@@ -1,5 +1,5 @@
 from pathlib import Path
-from bls_extractor import BLSExtractor
+from macrodata_pipeline.extractors.bls import BLSExtractor
 
 def main():
     # Example BLS series IDs
