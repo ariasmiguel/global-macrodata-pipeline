@@ -8,6 +8,10 @@ def main():
     # Get all series information
     df = extractor.get_all_series_info()
     
+    # Also save as CSV for data exploration
+    csv_path = Path("data/bronze/bls_series_info.csv")
+    df.to_csv(csv_path, index=False)
+
     # Save to bronze layer
     output_path = Path("data/bronze/bls_series_info.parquet")
     output_path.parent.mkdir(parents=True, exist_ok=True)
