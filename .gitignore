@@ -80,4 +80,7 @@ data/gold/*
 *.h5
 *.db
 *.sqlite
-*.sqlite3 
+*.sqlite3
+
+# Cursor specific
+.cursor/rules 
