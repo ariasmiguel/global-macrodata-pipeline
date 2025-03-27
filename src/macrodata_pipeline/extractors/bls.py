@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 import time
 import itertools
 import logging
@@ -6,6 +6,7 @@ from pathlib import Path
 import json
 import re
 from datetime import datetime
+import math
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -34,6 +35,8 @@ class BLSAPITracker:
     def __init__(self, cache_file='.bls_api_count.json'):
         self.cache_file = cache_file
         self.today = datetime.now().date().isoformat()
+        self.counts = {}
+        self.last_errors = {}
         self._load_count()
     
     def _load_count(self):
@@ -41,39 +44,114 @@ class BLSAPITracker:
             with open(self.cache_file, 'r') as f:
                 data = json.load(f)
                 if data.get('date') == self.today:
-                    self.count = data.get('count', 0)
-                else:
-                    self.count = 0
+                    self.counts = data.get('counts', {})
+                    self.last_errors = data.get('last_errors', {})
         except (FileNotFoundError, json.JSONDecodeError):
-            self.count = 0
+            pass  # Keep default empty dicts
     
     def _save_count(self):
         with open(self.cache_file, 'w') as f:
-            json.dump({'date': self.today, 'count': self.count}, f)
+            json.dump({
+                'date': self.today,
+                'counts': self.counts,
+                'last_errors': self.last_errors
+            }, f)
     
-    def increment(self):
-        self.count += 1
+    def increment(self, api_key: str):
+        if api_key not in self.counts:
+            self.counts[api_key] = 0
+        self.counts[api_key] += 1
         self._save_count()
+        logger.debug(f"Incremented count for API key {api_key}: {self.counts[api_key]}")
         
-    def can_make_request(self):
-        return self.count < API_LIMIT
+    def can_make_request(self, api_key: str = None):
+        if api_key:
+            return self.counts.get(api_key, 0) < API_LIMIT
+        return any(self.counts.get(key, 0) < API_LIMIT for key in self.counts)
     
-    def remaining(self):
-        return API_LIMIT - self.count
+    def remaining(self, api_key: str = None):
+        if api_key:
+            return API_LIMIT - self.counts.get(api_key, 0)
+        return {k: API_LIMIT - self.counts.get(k, 0) for k in self.counts}
+    
+    def set_error(self, api_key: str, error_message: str):
+        self.last_errors[api_key] = error_message
+        self._save_count()
+        logger.debug(f"Set error for API key {api_key}: {error_message}")
+    
+    def get_status(self, api_key: str = None):
+        if api_key:
+            return {
+                'count': self.counts.get(api_key, 0),
+                'remaining': self.remaining(api_key),
+                'limit': API_LIMIT,
+                'last_error': self.last_errors.get(api_key)
+            }
+        return {
+            'counts': self.counts,
+            'remaining': self.remaining(),
+            'limit': API_LIMIT,
+            'last_errors': self.last_errors
+        }
+        
+    def initialize_key(self, api_key: str):
+        """Initialize tracking for a new API key."""
+        if api_key not in self.counts:
+            self.counts[api_key] = 0
+            self._save_count()
+            logger.debug(f"Initialized tracking for API key {api_key}")
 
 class BLSExtractor(BaseExtractor):
     """Extractor for BLS API data."""
     
     BASE_URL = "https://api.bls.gov/publicAPI/v2"
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_keys: Optional[List[str]] = None):
         load_dotenv()
-        self.api_key = api_key or os.getenv("BLS_API_KEY")
-        if not self.api_key:
-            raise ValueError("BLS API key is required")
+        self.api_keys = api_keys or [
+            os.getenv("BLS_API_KEY"),
+            os.getenv("BLS_API_KEY_2")
+        ]
+        self.api_keys = [k for k in self.api_keys if k]  # Remove empty keys
+        
+        if not self.api_keys:
+            raise ValueError("At least one BLS API key is required")
+            
+        self.current_key_index = 0
         super().__init__()
         self.api_tracker = BLSAPITracker()
-        logger.debug("Initialized BLSExtractor")
+        
+        # Initialize tracking for each API key
+        for api_key in self.api_keys:
+            self.api_tracker.initialize_key(api_key)
+            
+        logger.debug(f"Initialized BLSExtractor with {len(self.api_keys)} API keys")
+        logger.debug(f"Initial API status: {self.api_tracker.get_status()}")
+    
+    @property
+    def current_api_key(self):
+        return self.api_keys[self.current_key_index]
+    
+    def rotate_api_key(self):
+        """Rotate to the next available API key if possible."""
+        next_index = (self.current_key_index + 1) % len(self.api_keys)
+        if next_index != self.current_key_index:
+            self.current_key_index = next_index
+            logger.info("Rotated to next API key")
+            return True
+        return False
+    
+    def get_available_api_key(self):
+        """Find an API key that hasn't reached its limit."""
+        initial_key = self.current_api_key
+        
+        while True:
+            if self.api_tracker.can_make_request(self.current_api_key):
+                return self.current_api_key
+                
+            if not self.rotate_api_key() or self.current_api_key == initial_key:
+                logger.warning("All API keys have reached their daily limit")
+                return None
     
     def generate_ppi_series_ids(self, industry_codes_path: Path, product_codes_path: Path) -> List[str]:
         """Generate PPI series IDs from industry and product codes."""
@@ -92,8 +170,10 @@ class BLSExtractor(BaseExtractor):
     
     def validate_series_batch(self, series_batch: List[str], retry_count: int = 0) -> Dict[str, bool]:
         """Validate a batch of series IDs against the BLS API with retries."""
-        if not self.api_tracker.can_make_request():
-            logger.warning(f"Daily API limit reached. Remaining requests: 0")
+        api_key = self.get_available_api_key()
+        if not api_key:
+            status = self.api_tracker.get_status()
+            logger.warning(f"All API keys have reached their daily limit. Status: {status}")
             return {series_id: False for series_id in series_batch}
         
         headers = {'Content-type': 'application/json'}
@@ -106,7 +186,7 @@ class BLSExtractor(BaseExtractor):
             "seriesid": series_batch,
             "startyear": years[-1],  # Use the older year as start
             "endyear": years[0],     # Use the newer year as end
-            "registrationkey": self.api_key
+            "registrationkey": api_key
         }
         
         try:
@@ -119,7 +199,6 @@ class BLSExtractor(BaseExtractor):
                 series_data = result.get('Results', {}).get('series', [])
                 for series in series_data:
                     series_id = series.get('seriesID')
-                    # Consider a series valid if it exists in the response
                     validation_results[series_id] = True
                     logger.debug(f"Series {series_id} found in API response")
                 
@@ -129,15 +208,16 @@ class BLSExtractor(BaseExtractor):
                         validation_results[series_id] = False
                         logger.debug(f"Series {series_id} not found in API response")
                         
-                self.api_tracker.increment()
-                logger.info(f"Remaining API requests today: {self.api_tracker.remaining()}")
+                self.api_tracker.increment(api_key)
+                status = self.api_tracker.get_status(api_key)
+                logger.info(f"API Status: {status}")
             else:
                 error_message = result.get('message', 'Unknown error')
+                self.api_tracker.set_error(api_key, error_message)
                 logger.warning(f"API request failed: {error_message}")
                 logger.debug(f"Full API response: {result}")
                 
-                # Check for API limit message after logging the error
-                if re.search(r'daily\s+threshold|limit|' + re.escape(self.api_key), error_message, re.IGNORECASE):
+                if re.search(r'daily\s+threshold|limit|' + re.escape(api_key), error_message, re.IGNORECASE):
                     logger.warning("Daily API limit reached. Stopping validation.")
                     validation_results = {}
                     
@@ -149,11 +229,12 @@ class BLSExtractor(BaseExtractor):
                     logger.error(f"Max retries reached for batch. Marking as invalid.")
                     validation_results = {}
             
-            # Ensure all results are boolean values
             return {series_id: bool(is_valid) for series_id, is_valid in validation_results.items()}
         
         except Exception as e:
-            logger.error(f"Error validating batch: {str(e)}")
+            error_msg = str(e)
+            self.api_tracker.set_error(api_key, error_msg)
+            logger.error(f"Error validating batch: {error_msg}")
             if retry_count < MAX_RETRIES:
                 logger.info(f"Retrying batch (attempt {retry_count + 1}/{MAX_RETRIES})")
                 time.sleep(RETRY_DELAY)
@@ -162,37 +243,48 @@ class BLSExtractor(BaseExtractor):
                 logger.error(f"Max retries reached for batch. Marking as invalid.")
                 return {series_id: False for series_id in series_batch}
 
-    def validate_all_series(self, series_ids: List[str]) -> Dict[str, bool]:
-        """Validate all series IDs using batched requests."""
-        all_results = {}
+    def validate_all_series(self, series_ids: List[str], batch_size: int = 50) -> Dict[str, List[str]]:
+        """Validate a list of series IDs in batches."""
         start_time = time.time()
+        valid_series = []
+        invalid_series = []
         
-        for i in range(0, len(series_ids), BATCH_SIZE):
-            if not self.api_tracker.can_make_request():
-                logger.warning("Daily API limit reached. Stopping validation.")
+        for i in range(0, len(series_ids), batch_size):
+            batch = series_ids[i:i + batch_size]
+            api_key = self.get_available_api_key()
+            
+            if not api_key:
+                status = self.api_tracker.get_status()
+                logger.warning(f"All API keys have reached their daily limit. Status: {status}")
                 break
                 
-            batch = series_ids[i:i + BATCH_SIZE]
-            batch_start = time.time()
-            logger.info(f"Validating batch {i//BATCH_SIZE + 1}/{(len(series_ids) + BATCH_SIZE - 1)//BATCH_SIZE}")
-            
-            batch_results = self.validate_series_batch(batch)
-            all_results.update(batch_results)
-            
-            # If all results in batch are False, stop processing
-            if all(value is False for value in batch_results.values()):
-                logger.warning("API limit reached. Stopping all validation.")
-                break
-            
-            batch_time = time.time() - batch_start
-            logger.info(f"Batch {i//BATCH_SIZE + 1} took {batch_time:.2f} seconds")
-            
-            # Sleep between batches to respect rate limits
-            time.sleep(SLEEP_BETWEEN_BATCHES)
+            try:
+                logger.info(f"Validating batch {i//batch_size + 1} of {math.ceil(len(series_ids)/batch_size)}")
+                data = self.get_series_data(batch, 2023, 2023, raw_output=True)
+                
+                # Process results
+                for series in data.get("Results", {}).get("series", []):
+                    valid_series.append(series["seriesID"])
+                
+                # Find invalid series by comparing with the batch
+                batch_invalid = [s for s in batch if s not in valid_series]
+                invalid_series.extend(batch_invalid)
+                
+            except Exception as e:
+                logger.error(f"Error validating batch: {str(e)}")
+                invalid_series.extend(batch)
+                if "daily threshold" in str(e).lower():
+                    if not self.rotate_api_key():
+                        break
         
         total_time = time.time() - start_time
-        logger.info(f"Total validation time: {total_time:.2f} seconds")
-        return all_results
+        logger.info(f"Validation completed in {total_time:.2f} seconds")
+        logger.info(f"API Status: {self.api_tracker.get_status()}")
+        
+        return {
+            "valid": valid_series,
+            "invalid": invalid_series
+        }
     
     def save_ppi_series_ids(self, series_ids: List[str], output_path: Path):
         """Save PPI series IDs to a file."""
@@ -205,56 +297,113 @@ class BLSExtractor(BaseExtractor):
     
     def get_series_metadata(self, series_id: str) -> Dict[str, Any]:
         """Fetch metadata for a specific series."""
+        api_key = self.get_available_api_key()
+        if not api_key:
+            status = self.api_tracker.get_status()
+            logger.warning(f"All API keys have reached their daily limit. Status: {status}")
+            raise ValueError(f"All API keys have reached their daily limit. Status: {status}")
+            
         logger.debug(f"Fetching metadata for series {series_id}")
         endpoint = f"{self.BASE_URL}/timeseries/metadata"
         params = {
             "seriesid": series_id,
-            "api_key": self.api_key
+            "registrationkey": api_key
         }
         
-        response = self.session.get(endpoint, params=params)
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = self.session.get(endpoint, params=params)
+            response.raise_for_status()
+            
+            data = response.json()
+            if data.get('status') == 'REQUEST_NOT_PROCESSED':
+                error_msg = data.get('message', ['Unknown error'])[0]
+                self.api_tracker.set_error(api_key, error_msg)
+                if "daily threshold" in error_msg.lower():
+                    # Try with another API key
+                    if self.rotate_api_key():
+                        return self.get_series_metadata(series_id)
+                raise ValueError(error_msg)
+            
+            self.api_tracker.increment(api_key)
+            status = self.api_tracker.get_status(api_key)
+            logger.info(f"API Status: {status}")
+            
+            return data
+        except Exception as e:
+            error_msg = str(e)
+            self.api_tracker.set_error(api_key, error_msg)
+            logger.error(f"Error fetching metadata: {error_msg}")
+            raise
     
-    def get_series_data(self, series_ids: List[str], start_year: int, end_year: int) -> pd.DataFrame:
+    def get_series_data(self, series_ids: List[str], start_year: int, end_year: int, raw_output: bool = False) -> Union[pd.DataFrame, Dict]:
         """Fetch time series data for multiple series."""
+        api_key = self.get_available_api_key()
+        if not api_key:
+            status = self.api_tracker.get_status()
+            logger.warning(f"All API keys have reached their daily limit. Status: {status}")
+            raise ValueError(f"All API keys have reached their daily limit. Status: {status}")
+            
         logger.debug(f"Fetching data for {len(series_ids)} series from {start_year} to {end_year}")
         endpoint = f"{self.BASE_URL}/timeseries/data"
         
-        # BLS API has rate limits, so we'll add a delay
         time.sleep(1)
         
         payload = {
             "seriesid": series_ids,
             "startyear": str(start_year),
             "endyear": str(end_year),
-            "api_key": self.api_key
+            "registrationkey": api_key
         }
         
-        response = self.session.post(endpoint, json=payload)
-        response.raise_for_status()
-        
-        data = response.json()
-        if "Results" not in data:
-            logger.error("No results found in API response")
-            raise ValueError("No results found in API response")
+        try:
+            response = self.session.post(endpoint, json=payload)
+            response.raise_for_status()
             
-        # Convert to DataFrame
-        records = []
-        for series in data["Results"]["series"]:
-            series_id = series["seriesID"]
-            for item in series["data"]:
-                records.append({
-                    "series_id": series_id,
-                    "year": item["year"],
-                    "period": item["period"],
-                    "value": float(item["value"]),
-                    "footnotes": item.get("footnotes", [])
-                })
-        
-        df = pd.DataFrame(records)
-        logger.debug(f"Retrieved {len(df)} data points")
-        return df
+            data = response.json()
+            if data.get('status') == 'REQUEST_NOT_PROCESSED':
+                error_msg = data.get('message', ['Unknown error'])[0]
+                self.api_tracker.set_error(api_key, error_msg)
+                if "daily threshold" in error_msg.lower():
+                    # Try with another API key
+                    if self.rotate_api_key():
+                        return self.get_series_data(series_ids, start_year, end_year, raw_output)
+                raise ValueError(error_msg)
+            
+            if "Results" not in data:
+                error_msg = "No results found in API response"
+                self.api_tracker.set_error(api_key, error_msg)
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+                
+            self.api_tracker.increment(api_key)
+            status = self.api_tracker.get_status(api_key)
+            logger.info(f"API Status: {status}")
+            
+            if raw_output:
+                return data
+                
+            # Convert to DataFrame
+            records = []
+            for series in data["Results"]["series"]:
+                series_id = series["seriesID"]
+                for item in series["data"]:
+                    records.append({
+                        "series_id": series_id,
+                        "year": item["year"],
+                        "period": item["period"],
+                        "value": float(item["value"]),
+                        "footnotes": item.get("footnotes", [])
+                    })
+            
+            df = pd.DataFrame(records)
+            logger.debug(f"Retrieved {len(df)} data points")
+            return df
+            
+        except Exception as e:
+            error_msg = str(e)
+            self.api_tracker.set_error(api_key, error_msg)
+            logger.error(f"Error fetching series data: {error_msg}")
+            raise
     
     def extract(self, series_ids: List[str], start_year: int, end_year: int) -> pd.DataFrame:
         """Extract data from BLS API."""

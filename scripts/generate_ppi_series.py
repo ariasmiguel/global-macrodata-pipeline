@@ -1,7 +1,6 @@
 import logging
 from pathlib import Path
 import pandas as pd
-from typing import List, Dict
 import time
 from datetime import datetime
 
@@ -14,78 +13,84 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def load_ppi_codes() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load industry and product codes from CSV files."""
+def load_ppi_series() -> pd.DataFrame:
+    """Load PPI series from the combined dataset."""
     bronze_dir = Path("data/bronze")
-    
-    industry_codes = pd.read_csv(bronze_dir / "ppi_industry_codes.csv")
-    product_codes = pd.read_csv(bronze_dir / "ppi_product_codes.csv")
-    
-    return industry_codes, product_codes
+    series_df = pd.read_csv(bronze_dir / "final_ppi_series_ids.csv")
+    return series_df
 
-def generate_series_ids(industry_codes: pd.DataFrame, product_codes: pd.DataFrame) -> List[Dict]:
-    """Generate all possible PPI series IDs."""
-    series_list = []
+def validate_series_by_type(series_df: pd.DataFrame, extractor: BLSExtractor) -> pd.DataFrame:
+    """Validate series IDs by type and update dataframe."""
+    # Initialize validation column
+    series_df['is_valid'] = False
+    series_df['latest_value'] = None
+    series_df['latest_date'] = None
     
-    for _, industry in industry_codes.iterrows():
-        industry_code = industry['industry_code'].strip()
+    # Process each type separately for better logging
+    for series_type in series_df['series_type'].unique():
+        type_series = series_df[series_df['series_type'] == series_type]
+        logger.info(f"\nValidating {len(type_series)} {series_type} series...")
         
-        matching_products = product_codes[product_codes['industry_code'].str.strip() == industry_code]
+        # Validate in batches to respect API rate limits
+        series_ids = type_series['series_id'].tolist()
+        validation_results = extractor.validate_all_series(series_ids)
         
-        for _, product in matching_products.iterrows():
-            product_code = product['product_code'].strip()
-            
-            series_id = f"PCU{industry_code}{product_code}"
-            
-            series_list.append({
-                'series_id': series_id,
-                'industry_code': industry_code,
-                'industry_name': industry['industry_name'],
-                'product_code': product_code,
-                'product_name': product['product_name']
-            })
+        # Update results in the dataframe
+        for series_id, result in validation_results.items():
+            mask = series_df['series_id'] == series_id
+            if isinstance(result, dict):
+                series_df.loc[mask, 'is_valid'] = True
+                latest_data = result.get('latest_data', {})
+                series_df.loc[mask, 'latest_value'] = latest_data.get('value')
+                series_df.loc[mask, 'latest_date'] = f"{latest_data.get('year')}-{latest_data.get('period')}"
+            else:
+                series_df.loc[mask, 'is_valid'] = bool(result)
+        
+        # Log validation results for this type
+        valid_count = type_series['is_valid'].sum()
+        logger.info(f"Found {valid_count} valid {series_type} series out of {len(type_series)}")
     
-    return series_list
+    return series_df
 
 def main():
-    """Main function to generate and save PPI series IDs."""
+    """Main function to validate PPI series IDs."""
     try:
         start_time = time.time()
         
-        logger.info("Loading PPI codes...")
-        industry_codes, product_codes = load_ppi_codes()
-        
-        logger.info("Generating series IDs...")
-        series_list = generate_series_ids(industry_codes, product_codes)
-        
-        series_df = pd.DataFrame(series_list)
+        logger.info("Loading PPI series data...")
+        series_df = load_ppi_series()
         
         logger.info("Validating series IDs against BLS API...")
         extractor = BLSExtractor()
-        validation_results = extractor.validate_all_series(series_df['series_id'].tolist())
+        series_df = validate_series_by_type(series_df, extractor)
         
-        # Ensure all validation results are boolean values
-        series_df['is_valid'] = series_df['series_id'].map(lambda x: bool(validation_results.get(x, False)))
-        
-        output_path = Path("data/bronze/ppi_series_ids.csv")
+        # Save results
+        output_path = Path("data/bronze/validated_ppi_series.csv")
         series_df.to_csv(output_path, index=False)
         
+        # Log summary statistics
+        total_time = time.time() - start_time
         valid_count = series_df['is_valid'].sum()
         total_count = len(series_df)
-        total_time = time.time() - start_time
         
-        logger.info(f"\nSummary:")
+        logger.info(f"\nValidation Summary:")
         logger.info(f"Total execution time: {total_time:.2f} seconds")
-        logger.info(f"Generated {total_count} series IDs ({valid_count} valid)")
-        logger.info(f"Saved to {output_path}")
+        logger.info(f"Total series: {total_count}")
+        logger.info(f"Valid series: {valid_count}")
+        logger.info(f"Invalid series: {total_count - valid_count}")
         
-        # Log valid series IDs for verification
-        valid_series = series_df[series_df['is_valid']]
-        logger.info("\nValid series IDs:")
-        logger.info(valid_series[['series_id', 'industry_name', 'product_name']].to_string())
+        # Log validation results by type
+        logger.info("\nResults by series type:")
+        for series_type in series_df['series_type'].unique():
+            type_df = series_df[series_df['series_type'] == series_type]
+            valid = type_df['is_valid'].sum()
+            total = len(type_df)
+            logger.info(f"{series_type}: {valid}/{total} valid ({(valid/total)*100:.1f}%)")
+        
+        logger.info(f"\nResults saved to {output_path}")
         
     except Exception as e:
-        logger.error(f"Error generating series IDs: {str(e)}")
+        logger.error(f"Error validating series IDs: {str(e)}")
         raise
 
 if __name__ == "__main__":
