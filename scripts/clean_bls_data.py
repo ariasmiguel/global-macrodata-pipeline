@@ -110,6 +110,57 @@ def load_raw_series_data(bronze_dir: Path) -> Dict[str, List]:
     
     return series_data
 
+def process_validated_series(bronze_dir: Path, silver_dir: Path):
+    """Process the validated PPI series CSV file and save as Parquet."""
+    start_time = time.time()
+    validated_file = bronze_dir / "validated_ppi_series.csv"
+    
+    if not validated_file.exists():
+        logger.warning(f"Validated PPI series file not found: {validated_file}")
+        return
+    
+    logger.info("Processing validated PPI series...")
+    
+    try:
+        # Read the CSV file
+        df = pd.read_csv(validated_file)
+        
+        # Basic validation and cleaning
+        logger.info(f"Loaded {len(df)} validated series")
+        
+        # Convert boolean columns properly
+        if 'is_valid' in df.columns:
+            df['is_valid'] = df['is_valid'].astype(bool)
+        
+        # Add timestamp for when this was processed
+        df['processed_timestamp'] = pd.Timestamp.now(tz='UTC')
+        
+        # Convert to PyArrow table
+        schema = []
+        for col in df.columns:
+            if col == 'series_id' or col == 'series_name' or col == 'series_type':
+                schema.append((col, pa.string()))
+            elif col == 'is_valid':
+                schema.append((col, pa.bool_()))
+            elif col == 'processed_timestamp':
+                schema.append((col, pa.timestamp('ns', tz='UTC')))
+            else:
+                # Default to string for other columns
+                schema.append((col, pa.string()))
+        
+        table = pa.Table.from_pandas(df, schema=pa.schema(schema))
+        
+        # Save to Parquet
+        output_path = silver_dir / 'series_metadata.parquet'
+        pq.write_table(table, output_path, compression='snappy')
+        
+        logger.info(f"Saved validated series to {output_path}")
+        logger.info(f"Processing completed in {time.time() - start_time:.2f} seconds")
+        log_memory_usage()
+    
+    except Exception as e:
+        logger.error(f"Error processing validated series: {str(e)}")
+
 def process_data_chunk(data_chunk: List[Dict], extraction_timestamp: pd.Timestamp) -> pd.DataFrame:
     """Process a chunk of data points into a standardized DataFrame."""
     records = []
@@ -253,6 +304,9 @@ def main():
     
     logger.info(f"Starting BLS data cleaning process with {MAX_WORKERS} workers")
     log_memory_usage()
+    
+    # Process validated PPI series file first
+    process_validated_series(bronze_dir, silver_dir)
     
     logger.info("Loading raw series data from bronze layer...")
     raw_data = load_raw_series_data(bronze_dir)
