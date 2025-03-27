@@ -55,6 +55,8 @@ Thumbs.db
 *.log
 logs/
 log/
+bls_cleaning.log
+bls_extraction.log
 
 # Local development
 .env.local
@@ -62,7 +64,12 @@ log/
 .env.test.local
 .env.production.local
 
-# Data files
+# Data directories - exclude all data but keep directory structure
+data/**/
+!data/
+!data/bronze/
+!data/silver/
+!data/gold/
 data/bronze/*
 data/silver/*
 data/gold/*
@@ -70,17 +77,44 @@ data/gold/*
 !data/silver/.gitkeep
 !data/gold/.gitkeep
 
-# Additional data patterns
+# Data files by extension
 *.csv
+*.tsv
 *.xlsx
 *.xls
+*.xlsm
+*.xlsb
 *.parquet
+*.avro
+*.orc
 *.json
+*.jsonl
 *.pkl
+*.pickle
 *.h5
+*.hdf5
+*.mat
 *.db
 *.sqlite
 *.sqlite3
+*.bak
+*.zip
+*.gz
+*.tar
+*.tgz
+*.7z
+*.rar
+*.feather
+*.arrow
+*.dta
+*.sas7bdat
+*.sav
+
+# Data files by pattern
+**/raw_series_data/
+**/*_data/
+**/extraction_results.json
+**/extraction_progress.json
 
 # Cursor specific
 .cursor/rules 
