@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<clickhouse>
+    <logger>
+        <level>warning</level>
+        <console>true</console>
+    </logger>
+
+    <http_port>8123</http_port>
+    <tcp_port>9000</tcp_port>
+
+    <users_config>users.xml</users_config>
+    <default_profile>default</default_profile>
+    <default_database>default</default_database>
+
+    <mark_cache_size>5368709120</mark_cache_size>
+    <max_concurrent_queries>100</max_concurrent_queries>
+</clickhouse> 

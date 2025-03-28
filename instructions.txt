@@ -1,0 +1,85 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2821
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 \uc0\u55357 \u56536  AI Project Instructions (prompt.md)\
+\
+This file contains development rules and best practices for building a data engineering project focused on macroeconomic and financial market data using modern open-source tooling. This file is designed to guide both AI systems (like ChatGPT and Cursor) and human contributors.\
+\
+\uc0\u11835 \
+\
+\uc0\u55358 \u56800  Project Context\
+	\'95	Goal: Build a personal data pipeline for macroeconomic data, financial markets (stocks, crypto, commodities, futures, options)\
+	\'95	Output Uses: Investment analytics, automated blog generation, internal dashboards\
+	\'95	Written In: Python (using Cursor)\
+	\'95	Powered By: AI-assisted code generation (e.g., ChatGPT)\
+\
+\uc0\u11835 \
+\
+\uc0\u9989  General Development Rules\
+	1.	Follow Medallion Architecture\
+	\'95	Bronze = Raw ingestion\
+	\'95	Silver = Cleaned & validated\
+	\'95	Gold = Aggregated/analytics-ready\
+	2.	Default Tech Stack:\
+	\'95	Language: Python\
+	\'95	Storage: ClickHouse, Apache Iceberg\
+	\'95	Infra: Docker, Docker Compose, AWS (S3, EC2, ECR), MinIO (alt to S3), Kubernetes (later phase)\
+	\'95	Workflow: Apache Airflow\
+	\'95	Web/App: React + TailwindCSS, Streamlit, Gradio (for internal tools)\
+	3.	Code Practices:\
+	\'95	Modular and AI-generatable code\
+	\'95	Always include logging, config support (.env/YAML/JSON), data validation\
+	\'95	CLI or Notebook interfaces to test pipeline stages\
+	\'95	Support local and cloud modes\
+	4.	All code/tasks must be given in 3 styles:\
+	\'95	\uc0\u9989  Best Practice \'97 clean, scalable, prod-ready\
+	\'95	\uc0\u55357 \u57056 \u65039  Practical \'97 simple, fast, local-friendly\
+	\'95	\uc0\u55357 \u56481  Creative \'97 experimental or cutting-edge\
+	5.	Prefer open-source tools unless explicitly asked to use cloud services.\
+\
+\uc0\u11835 \
+\
+\uc0\u55358 \u56816  Cursor-Specific Instructions\
+	6.	Cursor Rules and MCP Config:\
+	\'95	When relevant to a task, provide optimized cursor.rules or mcp suggestions\
+	\'95	Tailor rules to support smart file routing, formatting, and autocomplete\
+	\'95	Assume all code will be written and tested inside Cursor\
+\
+\uc0\u11835 \
+\
+\uc0\u55357 \u56520  Pipeline Rules\
+	7.	Ingestion Scripts Should:\
+	\'95	Separate concerns (download, load, transform)\
+	\'95	Include basic schema validation, null/missing detection\
+	\'95	Be fully logged and config-driven\
+	8.	ClickHouse Usage:\
+	\'95	Use native formats (Parquet, ORC) for bulk loads\
+	\'95	Include table DDL, schema, indexes\
+	\'95	Optimize inserts for performance (batching, partitioning)\
+\
+\uc0\u11835 \
+\
+\uc0\u55356 \u57104  Web & App Phase (Later)\
+	9.	Frontend Tools:\
+	\'95	React or Next.js + TailwindCSS\
+	\'95	Use Streamlit/Gradio for internal dashboards or quick POCs\
+	10.	Blog Generation:\
+\
+	\'95	Markdown or static site generation with templated insights\
+	\'95	Possibly integrate with Notion, GitHub Pages, or a JAMstack CMS\
+\
+\uc0\u11835 \
+\
+\uc0\u10024  Final Guidelines\
+	\'95	Keep everything modular and AI-friendly\
+	\'95	Use clean naming conventions and docstrings\
+	\'95	Ask for clarification before making assumptions\
+	\'95	Include dev vs prod config toggles where needed\
+\
+\uc0\u11835 \
+\
+This file can be referenced by any LLM agents, collaborators, or AI-based tooling to align contributions with the project\'92s architecture, tech stack, and goals.}

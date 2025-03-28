@@ -51,6 +51,7 @@ def load_validated_series(series_type: str = None) -> pd.DataFrame:
 def process_batch(series_batch: List[Dict], extractor: BLSExtractor, output_dir: Path) -> Dict:
     """Process a batch of series IDs and save raw JSON output."""
     batch_results = {}
+    consolidated_data = {}
     
     try:
         # Check API status before processing
@@ -80,14 +81,15 @@ def process_batch(series_batch: List[Dict], extractor: BLSExtractor, output_dir:
                 series_id = series["seriesID"]
                 # Find series type from batch data
                 series_type = next(s['series_type'] for s in series_batch if s['series_id'] == series_id)
-                output_file = output_dir / f"{series_type}_{series_id}.json"
                 
-                with open(output_file, 'w') as f:
-                    json.dump(series, f, indent=2)
+                # Add to consolidated data
+                consolidated_data[series_id] = {
+                    'series_type': series_type,
+                    'data': series
+                }
                 
                 batch_results[series_id] = {
                     'status': 'success',
-                    'file_path': str(output_file),
                     'series_type': series_type
                 }
         else:
@@ -152,6 +154,17 @@ def process_batch(series_batch: List[Dict], extractor: BLSExtractor, output_dir:
             for series_id in error_series:
                 logger.error(f"Error for {series_id}: {batch_results[series_id]['error']}")
     
+    # Save consolidated data to file
+    consolidated_file = output_dir / "consolidated_data.json"
+    if consolidated_file.exists():
+        with open(consolidated_file, 'r') as f:
+            existing_data = json.load(f)
+        existing_data.update(consolidated_data)
+        consolidated_data = existing_data
+    
+    with open(consolidated_file, 'w') as f:
+        json.dump(consolidated_data, f, indent=2)
+    
     return batch_results
 
 def extract_series_data(series_df: pd.DataFrame, extractor: BLSExtractor, max_batches: int = None) -> dict:
@@ -159,6 +172,12 @@ def extract_series_data(series_df: pd.DataFrame, extractor: BLSExtractor, max_ba
     # Create output directory
     output_dir = Path("data/bronze/raw_series_data")
     output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Initialize consolidated data file if it doesn't exist
+    consolidated_file = output_dir / "consolidated_data.json"
+    if not consolidated_file.exists():
+        with open(consolidated_file, 'w') as f:
+            json.dump({}, f)
     
     # Load previous progress if exists
     progress_file = output_dir / "extraction_progress.json"
@@ -238,6 +257,21 @@ def main():
     logger.info(f"Found {len(api_keys)} API keys")
     extractor = BLSExtractor(api_keys=api_keys)
     
+    # Clean up old files
+    output_dir = Path("data/bronze/raw_series_data")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Remove old progress and consolidated files
+    for file in ['extraction_progress.json', 'consolidated_data.json']:
+        file_path = output_dir / file
+        if file_path.exists():
+            file_path.unlink()
+            logger.info(f"Removed old {file}")
+    
+    # Initialize empty consolidated data file
+    with open(output_dir / "consolidated_data.json", 'w') as f:
+        json.dump({}, f)
+    
     # Process each type of series
     for series_type in ['aggregated', 'industry', 'commodity']:
         logger.info(f"\nProcessing {series_type} series...")
@@ -259,8 +293,6 @@ def main():
         logger.info(f"Failed extractions: {error_count}")
     
     # Save final results
-    output_dir = Path("data/bronze/raw_series_data")
-    output_dir.mkdir(parents=True, exist_ok=True)
     with open(output_dir / "extraction_results.json", "w") as f:
         json.dump(results, f, indent=2)
     
