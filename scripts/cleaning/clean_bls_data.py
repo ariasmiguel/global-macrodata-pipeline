@@ -38,23 +38,35 @@ def process_file(file_path: Path) -> Tuple[str, List]:
     try:
         with open(file_path, 'r') as f:
             data = json.load(f)
-            # Handle different possible structures
+            
+            # Handle consolidated data structure
+            if isinstance(data, dict):
+                results = []
+                for series_id, series_info in data.items():
+                    if isinstance(series_info, dict) and 'data' in series_info:
+                        # Extract the data points from the series
+                        series_data = series_info['data'].get('data', [])
+                        if series_data:
+                            results.append((series_id, series_data))
+                return results
+                
+            # Handle individual series structure
             if "seriesID" in data:
                 series_id = data["seriesID"]
-                return series_id, data["data"]
+                return [(series_id, data.get("data", []))]
             elif "series_id" in data:
                 series_id = data["series_id"]
-                return series_id, data.get("data", [])
+                return [(series_id, data.get("data", []))]
             else:
                 # Try to determine series_id from filename
                 series_id = file_path.stem.split("_")[-1]
                 # Find any list in the data that might contain time series points
                 for key, value in data.items():
                     if isinstance(value, list) and len(value) > 0:
-                        return series_id, value
+                        return [(series_id, value)]
     except Exception as e:
         logger.error(f"Error loading {file_path}: {str(e)}")
-    return None, []
+    return []
 
 def load_raw_series_data(bronze_dir: Path) -> Dict[str, List]:
     """Load raw JSON series data from bronze layer using parallel processing."""
@@ -81,9 +93,10 @@ def load_raw_series_data(bronze_dir: Path) -> Dict[str, List]:
         results = list(executor.map(process_file, files))
     
     # Collect results
-    for series_id, data in results:
-        if series_id:
-            series_data[series_id] = data
+    for file_results in results:
+        for series_id, data in file_results:
+            if series_id and data:
+                series_data[series_id] = data
     
     logger.info(f"Processed {len(files)} files in {time.time() - start_time:.2f} seconds")
     log_memory_usage()
@@ -104,9 +117,10 @@ def load_raw_series_data(bronze_dir: Path) -> Dict[str, List]:
                 results = list(executor.map(process_file, subdir_files))
             
             # Collect results
-            for series_id, data in results:
-                if series_id:
-                    series_data[series_id] = data
+            for file_results in results:
+                for series_id, data in file_results:
+                    if series_id and data:
+                        series_data[series_id] = data
     
     return series_data
 
