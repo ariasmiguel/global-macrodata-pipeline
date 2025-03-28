@@ -1,4 +1,11 @@
-# Python
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Python artifacts
 __pycache__/
 *.py[cod]
 *$py.class
@@ -19,6 +26,28 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Logs and data files
+logs/
+*.log
+data/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# ClickHouse and Docker specific
+clickhouse_data/
 
 # Virtual Environment
 venv/
