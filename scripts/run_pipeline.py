@@ -32,53 +32,7 @@ class PipelineRunner:
         self.results = {}
         
         # Define the pipeline steps with their scripts and descriptions
-        self.pipeline_steps = [
-            {
-                "step": 1,
-                "script": "scripts/setup/setup_clickhouse.py",
-                "description": "Initialize ClickHouse database with schema"
-            },
-            {
-                "step": 2,
-                "script": "scripts/ingestion/extract_bls_data.py",
-                "description": "Extract data from BLS API"
-            },
-            {
-                "step": 3,
-                "script": "scripts/ingestion/03_load_bronze_to_clickhouse.py",
-                "description": "Load raw data into ClickHouse bronze layer"
-            },
-            {
-                "step": 4,
-                "script": "scripts/cleaning/04_clean_bls_data.py",
-                "description": "Clean data for silver layer"
-            },
-            {
-                "step": 5,
-                "script": "scripts/ingestion/05_load_silver_to_clickhouse.py",
-                "description": "Load cleaned data to silver layer"
-            },
-            {
-                "step": 6,
-                "script": "scripts/analytics/06_transform_to_gold.py",
-                "description": "Transform data to gold layer"
-            },
-            {
-                "step": 7,
-                "script": "scripts/ingestion/07_load_gold_to_clickhouse.py",
-                "description": "Load and validate gold layer data"
-            },
-            {
-                "step": 8,
-                "script": "scripts/analytics/08_generate_dashboard_data.py",
-                "description": "Generate data for visualization dashboards"
-            },
-            {
-                "step": 9,
-                "script": "scripts/analytics/09_generate_blog_post.py",
-                "description": "Generate blog post content based on economic indicators"
-            }
-        ]
+        self.pipeline_steps = get_pipeline_steps()
     
     def run_script(self, script_path: str, step_num: int, description: str) -> Tuple[bool, str, float]:
         """Run a Python script and return the result."""
@@ -214,6 +168,51 @@ class PipelineRunner:
         logger.info(f"Pipeline results saved to {results_file}")
         
         return pipeline_results
+
+def get_pipeline_steps():
+    """Get the list of pipeline steps to execute."""
+    return [
+        {
+            "step": 1,
+            "description": "Initialize ClickHouse database with schema",
+            "script": "scripts/setup/setup_clickhouse.py"
+        },
+        {
+            "step": 2,
+            "description": "Extract data from BLS API",
+            "script": "scripts/ingestion/02_extract_bls_data.py"
+        },
+        {
+            "step": 3,
+            "description": "Load raw data into ClickHouse bronze layer",
+            "script": "scripts/ingestion/03_load_bronze_to_clickhouse.py"
+        },
+        {
+            "step": 4,
+            "description": "Transform data to silver layer",
+            "script": "scripts/cleaning/04_transform_to_silver.py"
+        },
+        {
+            "step": 5,
+            "description": "Load cleaned data to silver layer",
+            "script": "scripts/ingestion/05_load_silver_to_clickhouse.py"
+        },
+        {
+            "step": 6,
+            "description": "Transform data to gold layer",
+            "script": "scripts/cleaning/06_transform_to_gold.py"
+        },
+        {
+            "step": 7,
+            "description": "Load and validate gold layer data",
+            "script": "scripts/ingestion/07_load_gold_to_clickhouse.py"
+        },
+        {
+            "step": 8,
+            "description": "Generate dashboard data",
+            "script": "scripts/analytics/08_generate_dashboard_data.py"
+        }
+    ]
 
 def main():
     """Main execution function."""

@@ -121,7 +121,8 @@ def generate_summary_stats(client):
             "values": {},
             "monthly_view": {},
             "yearly_view": {},
-            "changes_view": {}
+            "changes_view": {},
+            "correlations": {}
         }
         
         # Metadata stats
@@ -208,6 +209,31 @@ def generate_summary_stats(client):
         stats["changes_view"]["distinct_series"] = changes_results[1]
         stats["changes_view"]["min_date"] = changes_results[2].isoformat() if changes_results[2] else None
         stats["changes_view"]["max_date"] = changes_results[3].isoformat() if changes_results[3] else None
+        
+        # Correlations stats
+        logger.info("Generating correlations statistics")
+        correlations_query = """
+        SELECT
+            count(*) AS total_correlations,
+            countDistinct(indicator_id_1) AS distinct_indicators_1,
+            countDistinct(indicator_id_2) AS distinct_indicators_2,
+            min(period_start) AS min_period_start,
+            max(period_end) AS max_period_end,
+            avg(correlation) AS avg_correlation,
+            min(correlation) AS min_correlation,
+            max(correlation) AS max_correlation
+        FROM macro.gold_economic_indicators_correlations
+        """
+        correlations_results = client.query(correlations_query).first_row
+        
+        stats["correlations"]["total_correlations"] = correlations_results[0]
+        stats["correlations"]["distinct_indicators_1"] = correlations_results[1]
+        stats["correlations"]["distinct_indicators_2"] = correlations_results[2]
+        stats["correlations"]["min_period_start"] = correlations_results[3].isoformat() if correlations_results[3] else None
+        stats["correlations"]["max_period_end"] = correlations_results[4].isoformat() if correlations_results[4] else None
+        stats["correlations"]["avg_correlation"] = round(correlations_results[5], 3) if correlations_results[5] else None
+        stats["correlations"]["min_correlation"] = round(correlations_results[6], 3) if correlations_results[6] else None
+        stats["correlations"]["max_correlation"] = round(correlations_results[7], 3) if correlations_results[7] else None
         
         # Add total runtime
         stats["execution_time_seconds"] = round(time.time() - start_time, 2)
@@ -346,48 +372,54 @@ def save_report(data, filename):
         logger.error(f"Error saving report: {str(e)}")
         return None
 
-def load_gold_data(client):
-    """Load gold layer data from Parquet files into ClickHouse."""
+def load_gold_data(client) -> Dict[str, int]:
+    """Load gold layer data into ClickHouse.
+    
+    Args:
+        client: ClickHouse client
+        
+    Returns:
+        Dict with counts of loaded records
+    """
     try:
+        logger.info("Loading gold layer data")
         logger.info("Loading gold layer data into ClickHouse")
-        gold_dir = Path("data/gold")
         
-        # Find latest files
-        metadata_files = list(gold_dir.glob("gold_metadata_*.parquet"))
-        values_files = list(gold_dir.glob("gold_values_*.parquet"))
+        # Load metadata
+        metadata_file = Path("data/gold/gold_metadata_*.parquet")
+        metadata_files = list(metadata_file.parent.glob(metadata_file.name))
+        if not metadata_files:
+            raise FileNotFoundError("No gold metadata files found")
         
-        if not metadata_files or not values_files:
-            raise FileNotFoundError("Missing gold layer Parquet files")
-            
-        # Get latest files
-        latest_metadata = sorted(metadata_files)[-1]
-        latest_values = sorted(values_files)[-1]
+        metadata_file = metadata_files[0]  # Use the most recent file
+        logger.info(f"Loading metadata from {metadata_file}")
         
-        logger.info(f"Loading metadata from {latest_metadata}")
-        metadata_df = pd.read_parquet(latest_metadata)
+        metadata_df = pd.read_parquet(metadata_file)
+        client.insert_df("macro.gold_economic_indicators_metadata", metadata_df)
+        metadata_count = len(metadata_df)
+        logger.info(f"Loaded {metadata_count} metadata records")
         
-        # Load metadata into ClickHouse
-        client.command("TRUNCATE TABLE IF EXISTS macro.gold_economic_indicators_metadata")
-        client.insert_df(
-            "macro.gold_economic_indicators_metadata",
-            metadata_df
-        )
-        logger.info(f"Loaded {len(metadata_df)} metadata records")
+        # Load values
+        values_file = Path("data/gold/gold_values_*.parquet")
+        values_files = list(values_file.parent.glob(values_file.name))
+        if not values_files:
+            raise FileNotFoundError("No gold values files found")
         
-        logger.info(f"Loading values from {latest_values}")
-        values_df = pd.read_parquet(latest_values)
+        values_file = values_files[0]  # Use the most recent file
+        logger.info(f"Loading values from {values_file}")
         
-        # Load values into values table
-        client.command("TRUNCATE TABLE IF EXISTS macro.gold_economic_indicators_values")
-        client.insert_df(
-            "macro.gold_economic_indicators_values",
-            values_df
-        )
-        logger.info(f"Loaded {len(values_df)} values records")
+        values_df = pd.read_parquet(values_file)
+        client.insert_df("macro.gold_economic_indicators_values", values_df)
+        values_count = len(values_df)
+        logger.info(f"Loaded {values_count} values records")
+        
+        # Skip correlations loading
+        logger.info("Skipping correlations loading")
         
         return {
-            "metadata_count": len(metadata_df),
-            "values_count": len(values_df)
+            "metadata_count": metadata_count,
+            "values_count": values_count,
+            "correlations_count": 0
         }
         
     except Exception as e:

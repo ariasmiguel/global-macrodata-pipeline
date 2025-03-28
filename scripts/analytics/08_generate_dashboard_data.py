@@ -13,6 +13,7 @@ import clickhouse_connect
 from typing import Dict, List, Any, Optional, Tuple
 import pandas as pd
 import numpy as np
+import uuid
 
 # Configure logging
 os.makedirs("logs/analytics", exist_ok=True)
@@ -55,69 +56,90 @@ def connect_to_clickhouse():
         logger.error(f"Failed to connect to ClickHouse: {str(e)}")
         raise
 
+class UUIDEncoder(json.JSONEncoder):
+    """Custom JSON encoder to handle UUID objects."""
+    def default(self, obj):
+        if isinstance(obj, uuid.UUID):
+            return str(obj)
+        return json.JSONEncoder.default(self, obj)
+
+def get_series_id_by_raw_id(client, raw_series_id: str) -> Optional[str]:
+    """Get the series_id for a given raw series ID."""
+    query = f"""
+    SELECT series_id
+    FROM macro.gold_economic_indicators_metadata
+    WHERE raw_series_id = '{raw_series_id}'
+    LIMIT 1
+    """
+    result = client.query(query)
+    return result.first_row[0] if result.row_count > 0 else None
+
 def generate_key_indicators_dataset(client) -> Dict[str, Any]:
     """Generate a dataset of key economic indicators for a dashboard summary."""
     try:
         start_time = time.time()
         logger.info("Generating key indicators dataset")
         
-        # Define key indicator series IDs
-        key_indicators = {
-            "ppi_all_commodities": "WPU00000000",         # PPI - All Commodities
-            "ppi_final_demand": "WPUFD4",                # PPI - Final Demand
-            "ppi_intermediate_demand": "WPUID61",         # PPI - Intermediate Demand
-            "ppi_goods": "WPUFD41",                      # PPI - Goods
-            "ppi_services": "WPUFD42",                   # PPI - Services
-            "unemployment_rate": "LNS14000000",          # Unemployment Rate
-            "labor_participation": "LNS11300000"         # Labor Force Participation Rate
-        }
-        
-        # Query to get the latest values for each indicator
-        query = f"""
-        WITH latest_dates AS (
-            SELECT series_id, max(date) as max_date
-            FROM macro.gold_economic_indicators_values
-            WHERE series_id IN ({', '.join([f"'{id}'" for id in key_indicators.values()])})
-            GROUP BY series_id
+        # Query to get all available indicators with their latest values
+        query = """
+        WITH latest_values AS (
+            SELECT 
+                m.series_id as series_id,
+                m.indicator_name as indicator_name,
+                m.category as category,
+                m.subcategory as subcategory,
+                v.month_date as date,
+                v.avg_value as value,
+                c.mom_change as mom_change,
+                c.yoy_change as yoy_change
+            FROM macro.gold_economic_indicators_monthly v
+            JOIN macro.gold_economic_indicators_metadata m ON v.series_id = m.series_id
+            LEFT JOIN macro.gold_economic_indicators_changes c 
+                ON v.series_id = c.series_id 
+                AND v.month_date = c.date
+            WHERE (v.series_id, v.month_date) IN (
+                SELECT series_id, max(month_date)
+                FROM macro.gold_economic_indicators_monthly
+                GROUP BY series_id
+            )
         )
-        
         SELECT 
-            v.series_id,
-            m.indicator_name,
-            v.date,
-            v.value,
-            c.mom_change,
-            c.yoy_change
-        FROM macro.gold_economic_indicators_values v
-        JOIN latest_dates ld ON v.series_id = ld.series_id AND v.date = ld.max_date
-        JOIN macro.gold_economic_indicators_metadata m ON v.series_id = m.series_id
-        LEFT JOIN macro.gold_economic_indicators_changes c ON v.series_id = c.series_id AND v.date = c.date
+            series_id,
+            indicator_name,
+            category,
+            subcategory,
+            date,
+            value,
+            mom_change,
+            yoy_change
+        FROM latest_values
+        ORDER BY category, subcategory, indicator_name
         """
         
         result = client.query(query)
         
-        # Transform to dictionary with indicator name as key
+        # Transform to dictionary with category grouping
         indicators_data = {}
         
         for row in result.named_results():
-            series_id = row['series_id']
+            series_id = str(row['series_id'])
+            category = row['category'] or 'Uncategorized'
+            subcategory = row['subcategory'] or 'General'
             
-            # Find the friendly name based on the series_id
-            friendly_name = None
-            for name, id in key_indicators.items():
-                if id == series_id:
-                    friendly_name = name
-                    break
+            if category not in indicators_data:
+                indicators_data[category] = {}
             
-            if friendly_name:
-                indicators_data[friendly_name] = {
-                    'series_id': series_id,
-                    'indicator_name': row['indicator_name'],
-                    'date': row['date'].isoformat() if row['date'] else None,
-                    'value': row['value'],
-                    'mom_change': row['mom_change'],
-                    'yoy_change': row['yoy_change']
-                }
+            if subcategory not in indicators_data[category]:
+                indicators_data[category][subcategory] = {}
+            
+            indicators_data[category][subcategory][series_id] = {
+                'series_id': series_id,
+                'indicator_name': row['indicator_name'] or f"Indicator {series_id}",
+                'date': row['date'].isoformat() if row['date'] else None,
+                'value': float(row['value']) if row['value'] is not None else None,
+                'mom_change': float(row['mom_change']) if row['mom_change'] is not None else None,
+                'yoy_change': float(row['yoy_change']) if row['yoy_change'] is not None else None
+            }
         
         # Add metadata
         dataset = {
@@ -136,72 +158,86 @@ def generate_key_indicators_dataset(client) -> Dict[str, Any]:
             'error': str(e)
         }
 
-def generate_historical_trends_dataset(client, series_ids: List[str], months: int = 24) -> Dict[str, Any]:
-    """Generate historical trend data for specified series over the last N months."""
+def generate_historical_trends_dataset(client, category: str = None, months: int = 24) -> Dict[str, Any]:
+    """Generate historical trend data for a category over the last N months."""
     try:
         start_time = time.time()
-        logger.info(f"Generating historical trends dataset for {len(series_ids)} series over {months} months")
+        logger.info(f"Generating historical trends dataset for category {category} over {months} months")
         
-        # Convert series IDs to a string for the query
-        series_ids_str = ', '.join([f"'{id}'" for id in series_ids])
-        
-        # Query to get historical data for the specified series
+        # Query to get historical data
+        category_filter = f"AND m.category = '{category}'" if category else ""
         query = f"""
-        WITH series_dates AS (
+        WITH monthly_data AS (
             SELECT 
-                series_id,
-                date
-            FROM macro.gold_economic_indicators_values
-            WHERE series_id IN ({series_ids_str})
-              AND date >= dateAdd(month, -{months}, today())
-            ORDER BY series_id, date
+                m.series_id as series_id,
+                m.indicator_name as indicator_name,
+                m.category as category,
+                m.subcategory as subcategory,
+                v.month_date as date,
+                v.avg_value as value,
+                c.mom_change as mom_change,
+                c.yoy_change as yoy_change
+            FROM macro.gold_economic_indicators_monthly v
+            JOIN macro.gold_economic_indicators_metadata m ON v.series_id = m.series_id
+            LEFT JOIN macro.gold_economic_indicators_changes c 
+                ON v.series_id = c.series_id 
+                AND v.month_date = c.date
+            WHERE v.month_date >= dateAdd(month, -{months}, today())
+            {category_filter}
         )
-        
         SELECT 
-            v.series_id,
-            m.indicator_name,
-            v.date,
-            v.value,
-            c.mom_change,
-            c.yoy_change
-        FROM macro.gold_economic_indicators_values v
-        JOIN series_dates sd ON v.series_id = sd.series_id AND v.date = sd.date
-        JOIN macro.gold_economic_indicators_metadata m ON v.series_id = m.series_id
-        LEFT JOIN macro.gold_economic_indicators_changes c ON v.series_id = c.series_id AND v.date = c.date
-        ORDER BY v.series_id, v.date
+            series_id,
+            indicator_name,
+            category,
+            subcategory,
+            date,
+            value,
+            mom_change,
+            yoy_change
+        FROM monthly_data
+        ORDER BY category, subcategory, indicator_name, date
         """
         
         result = client.query(query)
         
-        # Transform to dictionary grouped by series
-        series_data = {}
+        # Transform to dictionary grouped by category and series
+        trends_data = {}
         
         for row in result.named_results():
-            series_id = row['series_id']
+            series_id = str(row['series_id'])
+            category = row['category'] or 'Uncategorized'
+            subcategory = row['subcategory'] or 'General'
             
-            if series_id not in series_data:
-                series_data[series_id] = {
-                    'indicator_name': row['indicator_name'],
+            if category not in trends_data:
+                trends_data[category] = {}
+            
+            if subcategory not in trends_data[category]:
+                trends_data[category][subcategory] = {}
+            
+            if series_id not in trends_data[category][subcategory]:
+                trends_data[category][subcategory][series_id] = {
+                    'series_id': series_id,
+                    'indicator_name': row['indicator_name'] or f"Indicator {series_id}",
                     'data_points': []
                 }
             
-            series_data[series_id]['data_points'].append({
+            trends_data[category][subcategory][series_id]['data_points'].append({
                 'date': row['date'].isoformat() if row['date'] else None,
-                'value': row['value'],
-                'mom_change': row['mom_change'],
-                'yoy_change': row['yoy_change']
+                'value': float(row['value']) if row['value'] is not None else None,
+                'mom_change': float(row['mom_change']) if row['mom_change'] is not None else None,
+                'yoy_change': float(row['yoy_change']) if row['yoy_change'] is not None else None
             })
         
         # Add metadata
         dataset = {
             'timestamp': datetime.datetime.now().isoformat(),
             'months_included': months,
-            'series_count': len(series_data),
-            'data': series_data,
+            'category_filter': category,
+            'data': trends_data,
             'generation_time_seconds': round(time.time() - start_time, 2)
         }
         
-        logger.info(f"Historical trends dataset generated in {dataset['generation_time_seconds']} seconds with {len(series_data)} series")
+        logger.info(f"Historical trends dataset generated in {dataset['generation_time_seconds']} seconds")
         return dataset
     
     except Exception as e:
@@ -211,176 +247,70 @@ def generate_historical_trends_dataset(client, series_ids: List[str], months: in
             'error': str(e)
         }
 
-def generate_category_comparison_dataset(client, category: str) -> Dict[str, Any]:
-    """Generate dataset comparing different indicators within the same category."""
+def generate_correlation_matrix(client, category: str = None, months: int = 24) -> Dict[str, Any]:
+    """Generate a correlation matrix for indicators in a category."""
     try:
         start_time = time.time()
-        logger.info(f"Generating category comparison dataset for {category}")
+        logger.info(f"Generating correlation matrix for category {category} over {months} months")
         
-        # Query to get metadata for the category
-        metadata_query = f"""
-        SELECT 
-            series_id,
-            indicator_name
-        FROM macro.gold_economic_indicators_metadata
-        WHERE category = '{category}'
-        """
-        
-        metadata_result = client.query(metadata_query)
-        
-        # Get the series IDs in this category
-        series_info = []
-        series_ids = []
-        
-        for row in metadata_result.named_results():
-            series_info.append({
-                'series_id': row['series_id'],
-                'indicator_name': row['indicator_name']
-            })
-            series_ids.append(row['series_id'])
-        
-        if not series_ids:
-            logger.warning(f"No series found for category: {category}")
-            return {
-                'timestamp': datetime.datetime.now().isoformat(),
-                'category': category,
-                'error': f"No series found for category: {category}"
-            }
-        
-        # Convert series IDs to a string for the query
-        series_ids_str = ', '.join([f"'{id}'" for id in series_ids])
-        
-        # Query to get latest values for each series in the category
-        values_query = f"""
-        WITH latest_dates AS (
+        # Query to get correlations
+        category_filter = f"AND m1.category = '{category}' AND m2.category = '{category}'" if category else ""
+        query = f"""
+        WITH latest_correlations AS (
             SELECT 
-                series_id,
-                max(date) as max_date
-            FROM macro.gold_economic_indicators_values
-            WHERE series_id IN ({series_ids_str})
-            GROUP BY series_id
+                indicator_id_1,
+                indicator_id_2,
+                max(period_end) as max_period_end
+            FROM macro.gold_economic_indicators_monthly_correlations
+            WHERE period_end >= dateAdd(month, -{months}, today())
+            GROUP BY indicator_id_1, indicator_id_2
         )
         
         SELECT 
-            v.series_id,
-            v.date,
-            v.value,
-            c.yoy_change
-        FROM macro.gold_economic_indicators_values v
-        JOIN latest_dates ld ON v.series_id = ld.series_id AND v.date = ld.max_date
-        LEFT JOIN macro.gold_economic_indicators_changes c ON v.series_id = c.series_id AND v.date = c.date
-        """
-        
-        values_result = client.query(values_query)
-        
-        # Combine metadata with values
-        comparison_data = {}
-        
-        for row in values_result.named_results():
-            series_id = row['series_id']
-            
-            # Find the indicator name
-            indicator_name = next((item['indicator_name'] for item in series_info if item['series_id'] == series_id), series_id)
-            
-            comparison_data[series_id] = {
-                'indicator_name': indicator_name,
-                'date': row['date'].isoformat() if row['date'] else None,
-                'value': row['value'],
-                'yoy_change': row['yoy_change']
-            }
-        
-        # Add metadata
-        dataset = {
-            'timestamp': datetime.datetime.now().isoformat(),
-            'category': category,
-            'series_count': len(comparison_data),
-            'data': comparison_data,
-            'generation_time_seconds': round(time.time() - start_time, 2)
-        }
-        
-        logger.info(f"Category comparison dataset generated in {dataset['generation_time_seconds']} seconds with {len(comparison_data)} series")
-        return dataset
-    
-    except Exception as e:
-        logger.error(f"Error generating category comparison dataset: {str(e)}")
-        return {
-            'timestamp': datetime.datetime.now().isoformat(),
-            'category': category,
-            'error': str(e)
-        }
-
-def generate_correlation_matrix(client, series_ids: List[str], months: int = 24) -> Dict[str, Any]:
-    """Generate a correlation matrix between specified indicators over time."""
-    try:
-        start_time = time.time()
-        logger.info(f"Generating correlation matrix for {len(series_ids)} series over {months} months")
-        
-        # Convert series IDs to a string for the query
-        series_ids_str = ', '.join([f"'{id}'" for id in series_ids])
-        
-        # Query to get historical data for all specified series
-        query = f"""
-        SELECT 
-            v.series_id,
-            m.indicator_name,
-            v.date,
-            v.value
-        FROM macro.gold_economic_indicators_values v
-        JOIN macro.gold_economic_indicators_metadata m ON v.series_id = m.series_id
-        WHERE v.series_id IN ({series_ids_str})
-          AND v.date >= dateAdd(month, -{months}, today())
-        ORDER BY v.date, v.series_id
+            c.indicator_id_1,
+            c.indicator_id_2,
+            m1.indicator_name as name_1,
+            m2.indicator_name as name_2,
+            c.correlation,
+            c.period_start,
+            c.period_end
+        FROM macro.gold_economic_indicators_monthly_correlations c
+        JOIN latest_correlations lc 
+            ON c.indicator_id_1 = lc.indicator_id_1 
+            AND c.indicator_id_2 = lc.indicator_id_2
+            AND c.period_end = lc.max_period_end
+        JOIN macro.gold_economic_indicators_metadata m1 ON c.indicator_id_1 = m1.indicator_id
+        JOIN macro.gold_economic_indicators_metadata m2 ON c.indicator_id_2 = m2.indicator_id
+        WHERE c.period_end >= dateAdd(month, -{months}, today())
+        {category_filter}
+        ORDER BY m1.indicator_name, m2.indicator_name
         """
         
         result = client.query(query)
         
-        # Load data into pandas DataFrame
-        records = []
-        for row in result.named_results():
-            records.append({
-                'series_id': row['series_id'],
-                'indicator_name': row['indicator_name'],
-                'date': row['date'],
-                'value': row['value']
-            })
-        
-        df = pd.DataFrame(records)
-        
-        if df.empty:
-            logger.warning(f"No data found for the specified series IDs")
-            return {
-                'timestamp': datetime.datetime.now().isoformat(),
-                'error': "No data found for the specified series IDs"
-            }
-        
-        # Create a pivot table with dates as index and series as columns
-        pivot_df = df.pivot(index='date', columns='series_id', values='value')
-        
-        # Calculate correlation matrix
-        corr_matrix = pivot_df.corr().fillna(0).round(3)
-        
-        # Convert to dictionary format
+        # Transform to matrix format
         correlation_data = {}
         series_names = {}
         
-        # Get indicator names for each series
-        for series_id in series_ids:
-            indicator_name = df[df['series_id'] == series_id]['indicator_name'].iloc[0] if not df[df['series_id'] == series_id].empty else series_id
-            series_names[series_id] = indicator_name
-            correlation_data[series_id] = {}
-        
-        # Fill in correlation values
-        for s1 in series_ids:
-            for s2 in series_ids:
-                if s1 in corr_matrix.index and s2 in corr_matrix.columns:
-                    correlation_data[s1][s2] = float(corr_matrix.loc[s1, s2])
-                else:
-                    correlation_data[s1][s2] = None
+        for row in result.named_results():
+            id1 = str(row['indicator_id_1'])
+            id2 = str(row['indicator_id_2'])
+            
+            # Store series names
+            series_names[id1] = row['name_1'] or f"Indicator {id1}"
+            series_names[id2] = row['name_2'] or f"Indicator {id2}"
+            
+            # Store correlation
+            if id1 not in correlation_data:
+                correlation_data[id1] = {}
+            
+            correlation_data[id1][id2] = float(row['correlation']) if row['correlation'] is not None else None
         
         # Add metadata
         dataset = {
             'timestamp': datetime.datetime.now().isoformat(),
             'months_included': months,
+            'category_filter': category,
             'series_names': series_names,
             'correlation_matrix': correlation_data,
             'generation_time_seconds': round(time.time() - start_time, 2)
@@ -397,27 +327,25 @@ def generate_correlation_matrix(client, series_ids: List[str], months: int = 24)
         }
 
 def save_dataset(dataset: Dict[str, Any], name: str) -> str:
-    """Save a dataset to a JSON file in the dashboard data directory."""
+    """Save a dataset to a JSON file with timestamp."""
     try:
-        # Create directory if it doesn't exist
-        data_dir = Path("data/dashboards")
-        data_dir.mkdir(parents=True, exist_ok=True)
+        # Create the output directory if it doesn't exist
+        os.makedirs("data/dashboards", exist_ok=True)
         
         # Generate filename with timestamp
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{name}_{timestamp}.json"
-        file_path = data_dir / filename
+        filename = f"data/dashboards/{name}_{timestamp}.json"
         
-        # Save to file
-        with open(file_path, 'w') as f:
-            json.dump(dataset, f, indent=2)
+        # Save the dataset using the custom encoder
+        with open(filename, 'w') as f:
+            json.dump(dataset, f, cls=UUIDEncoder, indent=2)
         
-        logger.info(f"Saved dataset to {file_path}")
-        return str(file_path)
+        logger.info(f"Saved dataset to {filename}")
+        return filename
     
     except Exception as e:
         logger.error(f"Error saving dataset: {str(e)}")
-        return None
+        return ""
 
 def main():
     """Main execution function."""
@@ -445,61 +373,42 @@ def main():
         if key_indicators_path:
             results["datasets_saved"].append(key_indicators_path)
         
-        # Define series for historical trends
-        ppi_series = [
-            "WPU00000000",  # All Commodities
-            "WPUFD4",       # Final Demand
-            "WPUFD41",      # Goods
-            "WPUFD42"       # Services
-        ]
+        # Generate historical trends datasets for each category
+        categories = ['industry', 'commodity', 'labor']
+        for category in categories:
+            logger.info(f"Generating historical trends dataset for {category}")
+            historical_trends = generate_historical_trends_dataset(client, category=category, months=36)
+            results["datasets_generated"].append(f"historical_trends_{category}")
+            
+            # Save dataset
+            trends_path = save_dataset(historical_trends, f"historical_trends_{category}")
+            if trends_path:
+                results["datasets_saved"].append(trends_path)
         
-        # Generate historical trends dataset
-        logger.info("Generating historical trends dataset")
-        historical_trends = generate_historical_trends_dataset(client, ppi_series, months=36)
-        results["datasets_generated"].append("historical_trends")
+        # Generate correlation matrices for each category
+        for category in categories:
+            logger.info(f"Generating correlation matrix for {category}")
+            correlation_matrix = generate_correlation_matrix(client, category=category, months=36)
+            results["datasets_generated"].append(f"correlation_matrix_{category}")
+            
+            # Save dataset
+            matrix_path = save_dataset(correlation_matrix, f"correlation_matrix_{category}")
+            if matrix_path:
+                results["datasets_saved"].append(matrix_path)
         
-        # Save dataset
-        historical_trends_path = save_dataset(historical_trends, "historical_trends")
-        if historical_trends_path:
-            results["datasets_saved"].append(historical_trends_path)
-        
-        # Generate category comparison dataset for PPI
-        logger.info("Generating PPI category comparison dataset")
-        ppi_comparison = generate_category_comparison_dataset(client, "PPI")
-        results["datasets_generated"].append("ppi_comparison")
-        
-        # Save dataset
-        ppi_comparison_path = save_dataset(ppi_comparison, "ppi_comparison")
-        if ppi_comparison_path:
-            results["datasets_saved"].append(ppi_comparison_path)
-        
-        # Define series for correlation matrix
-        correlation_series = [
-            "WPU00000000",  # All Commodities
-            "WPUFD4",       # Final Demand
-            "WPUFD41",      # Goods
-            "WPUFD42",      # Services
-            "LNS14000000"   # Unemployment Rate
-        ]
-        
-        # Generate correlation matrix
-        logger.info("Generating correlation matrix")
-        correlation_matrix = generate_correlation_matrix(client, correlation_series, months=36)
-        results["datasets_generated"].append("correlation_matrix")
-        
-        # Save dataset
-        correlation_path = save_dataset(correlation_matrix, "correlation_matrix")
-        if correlation_path:
-            results["datasets_saved"].append(correlation_path)
-        
-        # Generate combined dashboard dataset with all data
+        # Generate combined dashboard dataset
         logger.info("Generating combined dashboard dataset")
         dashboard_data = {
             "timestamp": datetime.datetime.now().isoformat(),
             "key_indicators": key_indicators.get("data", {}),
-            "historical_trends": historical_trends.get("data", {}),
-            "ppi_comparison": ppi_comparison.get("data", {}),
-            "correlation_matrix": correlation_matrix.get("correlation_matrix", {})
+            "historical_trends": {
+                category: generate_historical_trends_dataset(client, category=category, months=36).get("data", {})
+                for category in categories
+            },
+            "correlation_matrices": {
+                category: generate_correlation_matrix(client, category=category, months=36).get("correlation_matrix", {})
+                for category in categories
+            }
         }
         
         # Save combined dataset
@@ -519,23 +428,9 @@ def main():
         logger.info(f"Datasets generated: {results['datasets_count']}")
         logger.info(f"Total execution time: {total_time:.2f} seconds")
         
-        # Save summary to logs
-        summary_dir = Path("data/logs")
-        summary_dir.mkdir(parents=True, exist_ok=True)
-        
-        with open(summary_dir / f"dashboard_generation_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json", "w") as f:
-            json.dump(results, f, indent=2)
-        
     except Exception as e:
         logger.error(f"Error in dashboard data generation: {str(e)}")
         results["error"] = str(e)
-        
-        # Save error to logs
-        summary_dir = Path("data/logs")
-        summary_dir.mkdir(parents=True, exist_ok=True)
-        
-        with open(summary_dir / f"dashboard_generation_error_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json", "w") as f:
-            json.dump(results, f, indent=2)
     
     finally:
         logger.info("Dashboard data generation process completed")

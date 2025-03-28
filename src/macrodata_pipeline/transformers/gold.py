@@ -9,8 +9,9 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
+import logging
 
 from macrodata_pipeline.utils import get_logger
 
@@ -19,32 +20,36 @@ logger = get_logger(__name__)
 class GoldTransformer:
     """Transformer for converting silver layer data to gold layer format."""
     
-    def __init__(
-        self,
-        silver_dir: str = "data/silver",
-        gold_dir: str = "data/gold",
-        log_dir: str = "logs/cleaning"
-    ):
-        """Initialize the gold transformer.
+    def __init__(self, input_dir: str = "data/silver", output_dir: str = "data/gold"):
+        """Initialize the transformer.
         
         Args:
-            silver_dir: Directory containing silver layer data
-            gold_dir: Directory for gold layer output
-            log_dir: Directory for log files
+            input_dir: Directory containing silver layer data
+            output_dir: Directory to save gold layer data
         """
-        self.silver_dir = Path(silver_dir)
-        self.gold_dir = Path(gold_dir)
-        self.log_dir = Path(log_dir)
+        super().__init__()
+        self.input_dir = input_dir
+        self.output_dir = output_dir
+        self.logger = logging.getLogger(__name__)
         
-        # Create output directories
-        self.gold_dir.mkdir(parents=True, exist_ok=True)
-        self.log_dir.mkdir(parents=True, exist_ok=True)
+        # Define correlation periods
+        self.correlation_periods = {
+            "1m": 30,      # 1 month (30 days)
+            "3m": 90,      # 3 months (90 days)
+            "6m": 180,     # 6 months (180 days)
+            "12m": 360,    # 12 months (360 days)
+            "24m": 720,    # 24 months (720 days)
+            "36m": 1080    # 36 months (1080 days)
+        }
         
-        # Set up logging
-        self.logger = get_logger(
-            __name__,
-            log_file=self.log_dir / "gold_transformer.log"
-        )
+        self.min_periods = {
+            "1m": 20,      # At least 20 days for 1-month correlation
+            "3m": 60,      # At least 60 days for 3-month correlation
+            "6m": 120,     # At least 120 days for 6-month correlation
+            "12m": 240,    # At least 240 days for 12-month correlation
+            "24m": 480,    # At least 480 days for 24-month correlation
+            "36m": 720     # At least 720 days for 36-month correlation
+        }
     
     def load_latest_silver_data(self) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Load the latest silver layer data files.
@@ -56,15 +61,15 @@ class GoldTransformer:
         
         try:
             # Find metadata file
-            metadata_file = self.silver_dir / "series_metadata.parquet"
+            metadata_file = self.input_dir / "series_metadata.parquet"
             if not metadata_file.exists():
                 raise FileNotFoundError("No silver metadata files found")
             
             # Find latest series file
-            series_file = self.silver_dir / "bls_data" / "series_values.parquet"
+            series_file = self.input_dir / "bls_data" / "series_values.parquet"
             if not series_file.exists():
                 # Try to find any parquet file in the bls_data directory
-                series_files = list(self.silver_dir.glob("bls_data/*.parquet"))
+                series_files = list(self.input_dir.glob("bls_data/*.parquet"))
                 if not series_files:
                     raise FileNotFoundError("No silver series files found")
                 series_file = series_files[0]
@@ -193,7 +198,7 @@ class GoldTransformer:
             # Pivot data for correlation calculation
             pivot_df = clean_df.pivot_table(
                 index='date',
-                columns='raw_series_id',  # Use raw_series_id instead of series_id
+                columns='raw_series_id',
                 values='value',
                 aggfunc='mean'  # In case of any remaining duplicates
             )
@@ -203,14 +208,14 @@ class GoldTransformer:
             
             # Convert to long format
             corr_df = pd.DataFrame({
-                'series_id_1': np.repeat(corr_matrix.index, len(corr_matrix.columns)),
-                'series_id_2': np.tile(corr_matrix.columns, len(corr_matrix.index)),
+                'indicator_id_1': np.repeat(corr_matrix.index, len(corr_matrix.columns)),
+                'indicator_id_2': np.tile(corr_matrix.columns, len(corr_matrix.index)),
                 'correlation': corr_matrix.values.flatten()
             })
             
             # Remove self-correlations
             corr_df = corr_df[
-                (corr_df['series_id_1'] != corr_df['series_id_2'])
+                (corr_df['indicator_id_1'] != corr_df['indicator_id_2'])
             ]
             
             # Keep only pairs with significant correlation
@@ -227,7 +232,98 @@ class GoldTransformer:
         except Exception as e:
             self.logger.error(f"Error calculating correlations: {str(e)}")
             raise
-    
+
+    def calculate_rolling_correlations(
+        self,
+        df: pd.DataFrame,
+        period: str,
+        min_periods: int
+    ) -> pd.DataFrame:
+        """Calculate rolling correlations for a specific period.
+        
+        Args:
+            df: DataFrame containing series data
+            period: Correlation period (e.g., "1m", "3m", "6m", etc.)
+            min_periods: Minimum number of overlapping periods required
+            
+        Returns:
+            DataFrame containing rolling correlations
+        """
+        self.logger.info(f"Calculating {period} rolling correlations")
+        
+        try:
+            # Clean the data first
+            clean_df = self.clean_series_data(df)
+            
+            # Pivot data for correlation calculation
+            pivot_df = clean_df.pivot_table(
+                index='date',
+                columns='raw_series_id',
+                values='value',
+                aggfunc='mean'
+            )
+            
+            # Calculate rolling correlations
+            window_size = self.correlation_periods[period]
+            rolling_corr = pivot_df.rolling(
+                window=window_size,
+                min_periods=min_periods
+            ).corr()
+            
+            # Convert to long format
+            corr_df = pd.DataFrame({
+                'indicator_id_1': np.repeat(rolling_corr.index.get_level_values(0), len(pivot_df.columns)),
+                'indicator_id_2': np.tile(pivot_df.columns, len(pivot_df.index)),
+                'correlation': rolling_corr.values.flatten(),
+                'period_start': np.repeat(rolling_corr.index.get_level_values(1), len(pivot_df.columns)),
+                'period_end': np.repeat(rolling_corr.index.get_level_values(1), len(pivot_df.columns)) + pd.DateOffset(months=window_size)
+            })
+            
+            # Remove self-correlations and NaN values
+            corr_df = corr_df[
+                (corr_df['indicator_id_1'] != corr_df['indicator_id_2']) &
+                (corr_df['correlation'].notna())
+            ]
+            
+            # Keep only pairs with significant correlation
+            corr_df = corr_df[
+                (corr_df['correlation'].abs() > 0.5)
+            ]
+            
+            # Add min_periods
+            corr_df['min_periods'] = min_periods
+            
+            self.logger.info(f"Calculated {len(corr_df)} significant {period} rolling correlations")
+            return corr_df
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating rolling correlations: {str(e)}")
+            raise
+
+    def save_correlations(
+        self,
+        corr_df: pd.DataFrame,
+        timestamp: str = None
+    ) -> None:
+        """Save correlation data to gold layer.
+        
+        Args:
+            corr_df: DataFrame containing correlation data
+            timestamp: Optional timestamp for file names
+        """
+        if timestamp is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        try:
+            # Save correlations
+            corr_file = self.output_dir / f"gold_correlations_{timestamp}.parquet"
+            corr_df.to_parquet(corr_file)
+            self.logger.info(f"Saved correlations to {corr_file}")
+            
+        except Exception as e:
+            self.logger.error(f"Error saving correlations: {str(e)}")
+            raise
+
     def save_gold_data(
         self,
         metadata_df: pd.DataFrame,
@@ -248,18 +344,18 @@ class GoldTransformer:
         
         try:
             # Save metadata
-            metadata_file = self.gold_dir / f"gold_metadata_{timestamp}.parquet"
+            metadata_file = self.output_dir / f"gold_metadata_{timestamp}.parquet"
             metadata_df.to_parquet(metadata_file)
             self.logger.info(f"Saved metadata to {metadata_file}")
             
             # Save values
-            values_file = self.gold_dir / f"gold_values_{timestamp}.parquet"
+            values_file = self.output_dir / f"gold_values_{timestamp}.parquet"
             values_df.to_parquet(values_file)
             self.logger.info(f"Saved values to {values_file}")
             
             # Save correlations if provided
             if corr_df is not None:
-                corr_file = self.gold_dir / f"gold_correlations_{timestamp}.parquet"
+                corr_file = self.output_dir / f"gold_correlations_{timestamp}.parquet"
                 corr_df.to_parquet(corr_file)
                 self.logger.info(f"Saved correlations to {corr_file}")
             
@@ -313,7 +409,7 @@ class GoldTransformer:
                 'created_at', 'updated_at'
             ]]
             
-            # Save gold data
+            # Save gold data without correlations
             self.save_gold_data(gold_metadata, gold_values, None)
             
             self.logger.info("Completed gold layer transformation")

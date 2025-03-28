@@ -47,8 +47,15 @@ def main():
         logger.info(f"Completed silver layer transformation in {duration:.2f} seconds")
         logger.info(f"Processed {metadata_count} metadata records and {values_count} value records")
         
+        # Log file locations
+        silver_dir = project_root / "data" / "silver"
+        logger.info(f"Silver layer files:")
+        logger.info(f"- Metadata: {silver_dir / 'series_metadata.parquet'}")
+        logger.info(f"- Values: {silver_dir / 'bls_data'}")
+        
     except Exception as e:
         logger.error(f"Error in silver layer transformation: {str(e)}")
+        logger.error("Full error details:", exc_info=True)
         sys.exit(1)
 
 if __name__ == "__main__":

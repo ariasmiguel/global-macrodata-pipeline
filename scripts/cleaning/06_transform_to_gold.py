@@ -8,7 +8,6 @@ into aggregated and analytics-ready data in the gold layer.
 import os
 import sys
 from pathlib import Path
-import pandas as pd
 import logging
 from datetime import datetime
 
@@ -16,7 +15,7 @@ from datetime import datetime
 project_root = Path(__file__).resolve().parents[2]
 sys.path.append(str(project_root))
 
-from macrodata_pipeline.transformers.gold import GoldTransformer
+from macrodata_pipeline.utils.debug import DebugGoldTransformer
 from macrodata_pipeline.utils import get_logger
 
 # Set up logging
@@ -30,34 +29,25 @@ logger = get_logger(
 def main():
     """Run the gold layer transformation process."""
     logger.info("Starting gold layer transformation")
+    start_time = datetime.now()
     
     try:
-        # Add debugging transformer
-        class DebugGoldTransformer(GoldTransformer):
-            def calculate_correlations(self, df, min_periods=12):
-                # Print dataframe info for debugging
-                print("Series DataFrame columns:", df.columns.tolist())
-                print("Series DataFrame head:")
-                print(df.head())
-                
-                # Continue with parent implementation
-                return super().calculate_correlations(df, min_periods)
-        
         # Initialize transformer with debugging
         transformer = DebugGoldTransformer(
-            silver_dir=project_root / "data" / "silver",
-            gold_dir=project_root / "data" / "gold",
-            log_dir=log_dir
+            input_dir=project_root / "data" / "silver",
+            output_dir=project_root / "data" / "gold"
         )
         
         # Run transformation
         transformer.transform()
         
         # Log completion
-        logger.info("Completed gold layer transformation")
+        duration = (datetime.now() - start_time).total_seconds()
+        logger.info(f"Completed gold layer transformation in {duration:.2f} seconds")
         
     except Exception as e:
         logger.error(f"Error in gold layer transformation: {str(e)}")
+        logger.error("Full error details:", exc_info=True)
         sys.exit(1)
 
 if __name__ == "__main__":
